@@ -64,7 +64,15 @@ trait LogisticSiteRegression extends SiteRegression[LogisticVariantModel, Logist
     val tolerance = 1e-6
     val initBeta = DenseVector.zeros[Double](data.cols)
 
-    val (beta, hessian) = findBeta(data, labels, initBeta, maxIter = maxIter, tolerance = tolerance)
+    val (beta, hessian): (Array[Double], DenseMatrix[Double]) = try {
+      findBeta(data, labels, initBeta, maxIter = maxIter, tolerance = tolerance)
+    } catch {
+      case e: IllegalArgumentException => {
+        logError("Called Variant:\n" + genotypes)
+        logError("Phenotype:\n" + phenotypes)
+        throw e
+      }
+    }
 
     // Use Hessian and weights to calculate the Wald Statistic, or p-value
     val fisherInfo = -hessian
@@ -87,6 +95,7 @@ trait LogisticSiteRegression extends SiteRegression[LogisticVariantModel, Logist
       genoStandardError,
       waldTests(1),
       numObservations)
+
   }
 
   /**
@@ -115,10 +124,22 @@ trait LogisticSiteRegression extends SiteRegression[LogisticVariantModel, Logist
     val logitArray = X * beta
 
     // column vector containing probabilities of samples being in class 1 (a case / affected / a positive indicator)
-    val p = logitArray.map(x => Math.exp(-softmax(Array(0.0, -x))))
+    val p = sigmoid(logitArray)
 
     // (Xi is a single sample's row) Xi.T * Xi * pi * (1 - pi) is a nXn matrix, that we sum across all i
-    val hessian = p.toArray.zipWithIndex.map { case (pi, i) => -X(i, ::).t * X(i, ::) * pi * (1.0 - pi) }.reduce(_ + _)
+    val a = p.toArray.zipWithIndex.map(p => -X(p._2, ::).t * X(p._2, ::) * p._1 * (1.0 - p._1))
+    val hessian: DenseMatrix[Double] = try {
+      a.reduce(_ + _)
+    } catch {
+      case _: Throwable => {
+        logError("X: \n" + X.toString)
+        logError("Y: \n" + Y.toString)
+        logError("beta: \n" + beta.toString)
+        logError("p: \n" + p.toString)
+        logError("expanded Hessian: \n" + a)
+        throw new IllegalArgumentException()
+      }
+    }
 
     // subtract predicted probability from actual response and multiply each row by the error for that sample. Achieved
     // by getting error (Y-p) and copying it columnwise N times (N = number of columns in X) and using *:* to pointwise
